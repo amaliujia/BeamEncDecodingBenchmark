@@ -1,0 +1,17 @@
+syntax = "proto2";
+option java_package = "org.apache.beam.benchmark.proto.grpc";
+option java_outer_classname = "GrpcProtos";
+option java_generate_equals_and_hash = true;
+package beam.benchmark.grpc;
+
+service ElementTransferService {
+  rpc send(stream ServicePayload) returns (stream ServiceReply) {}
+}
+
+message ServicePayload {
+  repeated bytes data = 1;
+  required string coder = 2;
+}
+
+message ServiceReply {
+}
