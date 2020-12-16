@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 import org.apache.beam.benchmark.proto.grpc.ElementTransferServiceGrpc.ElementTransferServiceImplBase;
 import org.apache.beam.benchmark.proto.grpc.GrpcProtos.ServicePayload;
@@ -15,19 +16,20 @@ import org.apache.beam.benchmark.proto.grpc.GrpcProtos.ServiceReply;
 import org.apache.beam.sdk.coders.ByteArrayCoder;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
+import org.apache.beam.sdk.util.Sleeper;
 import org.apache.beam.sdk.util.WindowedValue.FullWindowedValueCoder;
 
 public class DataTransferServer extends ElementTransferServiceImplBase {
     private static final Logger logger = Logger.getLogger(DataTransferServer.class.getName());
 
-//    public final ConcurrentLinkedQueue<org.apache.beam.benchmark.proto.grpc.GrpcProtos.Payload> queue;
 
-    private final Server server;
     // 4 threads
     private Executor executor = Executors.newFixedThreadPool(4);
-    public DataTransferServer(int port) {
-//        this.queue = q;
-        server = ServerBuilder.forPort(port).build();
+    private AtomicInteger count = new AtomicInteger(0);
+    private AtomicInteger success = new AtomicInteger(0);
+    private AtomicInteger fail = new AtomicInteger(0);
+
+    public DataTransferServer() {
     }
 
     @Override
@@ -35,6 +37,8 @@ public class DataTransferServer extends ElementTransferServiceImplBase {
         return new StreamObserver<ServicePayload>() {
             @Override
             public void onNext(ServicePayload payload) {
+                count.getAndIncrement();
+                logger.info("Receiving a bundle, current count:" + count);
                 executor.execute(
                     new Runnable() {
                         @Override
@@ -53,10 +57,10 @@ public class DataTransferServer extends ElementTransferServiceImplBase {
                                 try {
                                     coder.decode(data.newInput());
                                 } catch (IOException e) {
-                                    e.printStackTrace();
+                                    fail.getAndIncrement();
                                 }
                             }
-                            responseObserver.onNext(ServiceReply.newBuilder().build());
+                            success.getAndIncrement();
                         }
                     }
                 );
@@ -69,38 +73,28 @@ public class DataTransferServer extends ElementTransferServiceImplBase {
 
             @Override
             public void onCompleted() {
-                responseObserver.onCompleted();
+                logger.info("completing...");
+                int acc = 0;
+                while (true) {
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+
+                    int c = count.get();
+                    int s = success.get() + fail.get();
+                    logger.info("success + fail=" + s);
+                    for (int i = 0; i < s - acc; i++) {
+                        responseObserver.onNext(ServiceReply.newBuilder().build());
+                    }
+                    acc = s;
+                    if (s == c) {
+                        responseObserver.onCompleted();
+                        break;
+                    }
+                }
             }
         };
-    }
-
-    public void start() throws IOException {
-        server.start();
-        logger.info("Server started, listening on " + server.getPort());
-        Runtime.getRuntime().addShutdownHook(new Thread() {
-            @Override
-            public void run() {
-                // Use stderr here since the logger may have been reset by its JVM shutdown hook.
-                System.err.println("*** shutting down gRPC server since JVM is shutting down");
-                try {
-                    DataTransferServer.this.stop();
-                } catch (InterruptedException e) {
-                    e.printStackTrace(System.err);
-                }
-                System.err.println("*** server shut down");
-            }
-        });
-    }
-
-    public void stop() throws InterruptedException {
-        if (server != null) {
-            server.shutdown().awaitTermination(30, TimeUnit.SECONDS);
-        }
-    }
-
-    public void blockUntilShutdown() throws InterruptedException {
-        if (server != null) {
-            server.awaitTermination();
-        }
     }
 }
